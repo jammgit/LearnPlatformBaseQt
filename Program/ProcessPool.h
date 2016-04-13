@@ -100,7 +100,7 @@ ProcessPool<T>::ProcessPool(int listenfd, int process_number)
 		{	
 			close(m_sub_process[i].m_pipefd[1]);
 		}	
-	}
+	} 
 
 }
 
