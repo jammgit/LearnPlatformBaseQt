@@ -1,7 +1,13 @@
-#include "ProcessPool.h"
-#include "apue.h"
-#include "CgiServer.h"
 
+/*
+*	作者：江伟霖
+*	时间：2016/04/15
+*	邮箱：269337654@qq.com or adalinors@gmail.com
+*	描述：服务器主程序
+*/
+
+#include "ProcessPool.h"
+#include "CgiServer.h"
 
 
 int main(int argc, char *argv[])
@@ -12,6 +18,9 @@ int main(int argc, char *argv[])
 		write(STDERR_FILENO, "socket error\n", 13);
 		exit(-1);
 	}
+
+	int on = 1;
+	setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(int));
 
 	struct sockaddr_in serv;
 	memset(&serv, 0, sizeof(serv));

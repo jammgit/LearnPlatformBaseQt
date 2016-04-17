@@ -1,3 +1,10 @@
+/*
+*	作者：江伟霖
+*	时间：2016/04/15
+*	邮箱：269337654@qq.com or adalinors@gmail.com
+*	描述：功能函数实现
+*/
+
 #include "apue.h"
 
 int sig_pipefd[2];
@@ -12,11 +19,16 @@ int gSetNonblocking(int fd)
 }
 
 /* 往epoll描述符添加套接字 */
-void gAddfd(int epollfd, int fd)
+void gAddfd(int epollfd, int fd, bool oneshoot)
 {
 	epoll_event event;
 	event.data.fd = fd;
 	event.events = EPOLLIN | EPOLLET;
+	/* 同一时刻只允许一个线程处理该描述符 */
+	if (oneshoot)
+	{
+		event.events = event.events | EPOLLONESHOT;
+	}
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
 	gSetNonblocking(fd);
 }
@@ -47,4 +59,12 @@ void gRemovefd(int epollfd, int fd)
 {
 	epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, 0);
 	close(fd);
+}
+
+void gResetOneshot(int epollfd, int sockfd)
+{
+	epoll_event event;
+	event.data.fd = sockfd;
+	event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+	epoll_ctl(epollfd, EPOLL_CTL_MOD, sockfd, &event);
 }

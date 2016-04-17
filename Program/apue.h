@@ -1,3 +1,9 @@
+/*
+*	作者：江伟霖
+*	时间：2016/04/15
+*	邮箱：269337654@qq.com or adalinors@gmail.com
+*	描述：功能函数声明头文件
+*/
 #ifndef APUE_H
 #define APUE_H
 
@@ -15,10 +21,11 @@
 
 extern int sig_pipefd[2];
 int gSetNonblocking(int fd);
-void gAddfd(int epollfd, int fd);
+void gAddfd(int epollfd, int fd, bool oneshoot = false);
 void gSigHandler(int sig);
 void gAddSig(int sig, void (*handler)(int), bool restart = true);
 void gRemovefd(int epollfd, int fd);
+void gResetOneshot(int epollfd, int sockfd);
 
 
 #endif

@@ -1,3 +1,10 @@
+/*
+*	作者：江伟霖
+*	时间：2016/04/15
+*	邮箱：269337654@qq.com or adalinors@gmail.com
+*	描述：简单回射服务
+*/
+
 #ifndef CGISERVER_H
 #define CGISERVER_H
 #include "apue.h"
@@ -23,56 +30,46 @@
 class CgiServer
 {
 private:
+	const int BUFFSIZE = 256;
 	int m_epollfd;
-	int m_sockfd;
+	int m_connfd;
 	struct sockaddr_in m_client;
 public:
-	
+	CgiServer(int connfd):m_connfd(connfd) {};
 
-	void init(int epollfd, int sockfd, const sockaddr_in& client)
+	void Init(int epollfd, int connfd, const sockaddr_in& client)
 	{
 		m_epollfd = epollfd;
-		m_sockfd = sockfd;
+		m_connfd = connfd;
 		m_client = client;
 	}
 
 	/* 进程将剩余任务交给子进程，然后自己立刻回到epoll_wait状态 */
-	void process()
+	int Process()
 	{
-		pid_t pid;
 		int nRead;
-		char buf[MAX_RECV_BUF];
-		char replybuf[MAX_RECV_BUF + 64];
-		if ((pid = fork()) < 0)
+		char buf[BUFFSIZE];
+		char sendbuf[BUFFSIZE + 32];
+		while (1)
 		{
-			// how to process it?
-		}
-		else if (pid == 0)
-		{
-			/* 在gAddfd时，套接字被设置为非阻塞的，如果不设置为阻塞，那么在下面while循环将出现问题 */
-			int old_option = fcntl(m_sockfd, F_GETFL);
-			int new_option = old_option & ~O_NONBLOCK;
-			fcntl(m_sockfd, F_SETFL, new_option);
-
-			while (true)
+			memset(buf, 0, sizeof(buf));
+			nRead = recv(m_connfd, buf, BUFFSIZE, 0);
+			if (nRead == 0)
 			{
-				/* 简单的应答测试 */
-				memset(buf, 0, sizeof(buf));
-				nRead = read(m_sockfd, buf, MAX_RECV_BUF);
-				if (nRead == 0)
-				{
-					close(m_sockfd);
-					exit(-1);
-				}
-				buf[nRead] = '\0';
-				memset(replybuf, 0, sizeof(replybuf));
-				sprintf(replybuf, "You have send to server:%s", buf);
-				write(m_sockfd, replybuf, strlen(replybuf));
-			
+				close(m_connfd);
+				return -1;
 			}
+			else if (nRead < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			{
+				return m_connfd;
+			}
+			/* 处理事件 */
+			
+			buf[nRead] = '\0';
+			memset(sendbuf, 0, sizeof(sendbuf));
+			sprintf(sendbuf, "You have send to server:%s", buf);
+			send(m_connfd, buf, strlen(buf), 0);
 		}
-		/* 父进程不再监听此套接字 */
-		gRemovefd(m_epollfd, m_sockfd);
 
 	}
 

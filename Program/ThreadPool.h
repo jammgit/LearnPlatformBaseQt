@@ -18,13 +18,26 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <list>
+#include "apue.h"
 
 template<typename T>
 class ThreadPool
 {
 
 public:
-	ThreadPool(int threadnum = 8, int maxreqnum = 1000);
+	/*	2016.02.17/17:13！
+	*	由于对每个链接套接字设置了EPOLLONESHOT，故需要将进程epollfd传递进来，待线程处理完上次请求后，
+	*	再向epollfd注册该套接字。（此函数委托默认构造函数完成一部分构造/C++类型转换）
+	*/
+	ThreadPool(int epollfd, long threadnum = 8, long maxreqnum = 1000)
+		: ThreadPool(threadnum, maxreqnum)
+	{
+		m_epollfd = epollfd;
+	};
+	/*	为提高线程池类的复用性，提供一个默认构造函数。
+	*/
+	ThreadPool(long threadnum = 8, long maxreqnum = 1000);
+
 	~ThreadPool()
 	{
 		delete [] m_Pthread;
@@ -40,6 +53,9 @@ public:
 	void Run(int index);
 
 private:
+	/* 进程级epoll事件描述符，当使用默认构造函数构造的对象时，该变量无用 */
+	int m_epollfd;
+
 	/* 请求队列最大任务数 */
 	int m_MaxRequestNum;
 	/* 线程池线程数量 */
@@ -58,8 +74,9 @@ private:
 };
 
 template<typename T>		
-ThreadPool<T>::ThreadPool(int threadnum, int maxreqnum)
-	: m_MaxRequestNum(maxreqnum), m_ThreadNum(threadnum), m_Pthread(nullptr), m_Stop(false)
+ThreadPool<T>::ThreadPool(long threadnum, long maxreqnum)
+	: m_MaxRequestNum(maxreqnum), m_ThreadNum(threadnum),
+	  m_Pthread(nullptr), m_Stop(false), m_epollfd(-1)
 {
 	int ret;
 	/* 信号量值小于零就block */
@@ -134,12 +151,11 @@ void* ThreadPool<T>::Work(void *args)
 template<typename T>
 void ThreadPool<T>::Run(int index)
 {
-	printf("pthread:%d\n", index);
 	while (!m_Stop)
 	{
 
 		sem_wait(&m_QueSem);
-		printf("pthread:%d\n", index);
+		printf("pid:%d pthread:%d\n", getpid(), index);
 		pthread_mutex_lock(&m_QueMutex);
 		
 		if (m_WorkList.empty())
@@ -156,7 +172,13 @@ void ThreadPool<T>::Run(int index)
 		{
 			continue;
 		}
-		request->Process();
+		/* 返回该线程处理的套接字 */
+		int sockfd = request->Process();
+		/* 如果该线程的套接字设置了EPOLLONESHOT;另外，如果Process返回小于零值，说明套接字被关闭，此时不应该再注册该套接字 */
+		if (m_epollfd > 0 && sockfd > 0)
+		{
+			gResetOneshot(m_epollfd, sockfd);
+		}
 		delete request;
 	}
 }

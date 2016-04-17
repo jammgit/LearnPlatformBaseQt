@@ -1,7 +1,11 @@
 
 /*
-*
-*
+*	作者：江伟霖
+*	时间：2016/04/15
+*	邮箱：269337654@qq.com or adalinors@gmail.com
+*	描述：此文件封装了一个进程程类，主要工作为检测监听/连接套接字，将消息传达给相
+*		 应服务。注意，模板参数的类必须实现了公有函数void Process()，用处处理
+*		 指定实务；如用作http时，http应答的处理应该在此函数实现。
 */
 
 #ifndef PROCESSPOOL_H
@@ -22,8 +26,16 @@
 #include <netinet/in.h>
 #include <sys/stat.h>
 
+/*
+*	ThreadPool.h 和 apue.h包含的顺序不能变；若倒置，由于ProcessPool.h包含ThreadPool.h，而
+*	ProcessPool.h已包含apue.h，所以在ThreadPool.h中就算有#include"apue.h"的语句，它也不会
+*	包含它进去，故编译时会找不到函数地址，在连接阶段就出现：对‘gResetOneshot(int, int)’未定义的引用
+*/
+#include "ThreadPool.h"
+/*	其实也不用再包含此头文件，因为ThreadPool.h 已包含 */
 #include "apue.h"
 
+/* 父进程用于标志子进程的类 */
 class Process
 {
 public:
@@ -33,6 +45,7 @@ public:
 	int m_pipefd[2];
 };
 
+/* 进程池类 */
 template< typename T >
 class ProcessPool
 {
@@ -57,22 +70,31 @@ private:
 	void run_child();
 
 private:
+	/* 最大进程数量 */
 	static const int MAX_PROCESS_NUMBER = 16;
-	static const int USER_PER_PROCESS = 65536;
+	/* 每个进程最大epoll注册描述符数量 */
 	static const int MAX_EVENT_NUMBER = 1024;
 
+	/* 进程数量 */
 	int m_process_number;
+	/* 子进程索引 */
 	int m_index;
+	/* 进程epoll描述符*/
 	int m_epollfd;
+	/* 监听套接字 */
 	int m_listenfd;
+
+	/* 进程是否停止 */
 	bool m_stop;
-	/* save sub process info*/
+
+	/* 进程信息数组 */
 	Process *m_sub_process;
+	/* 进程池实例 */
 	static ProcessPool<T> *m_instance;
 };
 
 template<typename T>
-ProcessPool<T>* ProcessPool<T>::m_instance = NULL;
+ProcessPool<T>* ProcessPool<T>::m_instance = nullptr;
 
 template<typename T>
 ProcessPool<T>::ProcessPool(int listenfd, int process_number)
@@ -108,7 +130,8 @@ ProcessPool<T>::ProcessPool(int listenfd, int process_number)
 template<typename T>
 void ProcessPool<T>::setup_sig_to_pipe()
 {
-	m_epollfd = epoll_create(256);
+	/* 内核2.6.8以上的linux系统由内核界定，否则参数没用（原指注册的最大描述符值） */
+	m_epollfd = epoll_create(5);
 	assert(m_epollfd != -1);
 	int ret = socketpair(AF_UNIX, SOCK_STREAM, 0, sig_pipefd);
 	assert(ret != -1);
@@ -116,7 +139,7 @@ void ProcessPool<T>::setup_sig_to_pipe()
 	/* 对于父进程、子进程和所有其它进程，来自外界的信号都通过unix套接字传送到进程 */
 	gSetNonblocking(sig_pipefd[1]);
 	gAddfd(m_epollfd, sig_pipefd[0]);
-
+	/* 指定的信号都通过sig_pipefd[1]套接字传送给进程 */
 	gAddSig(SIGCHLD, gSigHandler);
 	gAddSig(SIGTERM, gSigHandler);
 	gAddSig(SIGINT, gSigHandler);
@@ -130,7 +153,6 @@ void ProcessPool<T>::Run()
 	{
 		printf("child run\n");
 		this -> run_child();
-		
 		return ;
 	}
 	printf("parent run\n");
@@ -147,17 +169,21 @@ void ProcessPool<T>::run_child()
 	int pipefd = m_sub_process[m_index].m_pipefd[1];
 	gAddfd(m_epollfd, pipefd);
 
+	/* 一次从内核返回的任务最大值为MAX_EVENT_NUMBER */
 	epoll_event event[MAX_EVENT_NUMBER];
 
+	/* 实例化线程池 */
+	ThreadPool<T> tpool(m_epollfd);
 	/* 服务类型的类，根据下文，T类必须实现init、process函数 */
-	T *users = new T[USER_PER_PROCESS];
-	assert(users);
-	int number = 0;
-	int ret = -1;
+	// T *users = new T[USER_PER_PROCESS];
+	// assert(users);
+
+	int number = 0; /* epoll_wait返回值存储变量 */
+	int ret = -1;  /* 各种系统调用返回值存储变量 */
 
 	while (!m_stop)
 	{
-
+		/* 如果设置非阻塞，那么cpu使用率很高，没必要设置非阻塞 */
 		number = epoll_wait(m_epollfd, event, MAX_EVENT_NUMBER, -1);
 		if (number < 0 && errno != EINTR)
 		{
@@ -186,17 +212,14 @@ void ProcessPool<T>::run_child()
 					printf("errno is -> %d:%s\n", errno, strerror(errno));
 					continue;
 				}
-				gAddfd(m_epollfd, connfd);
-				users[connfd].init(m_epollfd, connfd, cliaddr);
-				
-
+				/* 设置连接套接字EPOLLONESHOT */
+				gAddfd(m_epollfd, connfd, true);
 			} /* 来子外界的信号，如在终端输入kill -signal PID给此进程时 */
 			else if (sockfd == sig_pipefd[0] && (event[i].events & EPOLLIN))
 			{
 				int sig;
 				int signals[256];
 				ret = recv(sig_pipefd[0], (char *)signals, sizeof(signals), 0);
-			
 				if (ret <= 0)
 					continue;
 				
@@ -226,26 +249,25 @@ void ProcessPool<T>::run_child()
 				} 
 			}/* 已经连接的用户发送请求的数据到达 */
 			else if (event[i].events & EPOLLIN)
-				users[sockfd].process();
+			{
+				//users[sockfd].Process();
+				tpool.Append(new T(sockfd));
+			}
 			else
 				continue;
 		}	
 	}
-	delete [] users;
-	users = NULL;
 	close(pipefd);
 	close(m_listenfd);
 	close(m_epollfd);
-	close(sig_pipefd[0]);   //close by create process
+	close(sig_pipefd[0]);   
 	close(sig_pipefd[1]);
-	
 }
 
 template<typename T>
 void ProcessPool<T>::run_parent()
 {
 	this->setup_sig_to_pipe();
-
 	gAddfd(m_epollfd, m_listenfd);
 
 	epoll_event event[MAX_PROCESS_NUMBER];
@@ -256,13 +278,12 @@ void ProcessPool<T>::run_parent()
 
 	while (!m_stop)
 	{
-		number = epoll_wait(m_epollfd, event, MAX_EVENT_NUMBER, 0);
+		number = epoll_wait(m_epollfd, event, MAX_EVENT_NUMBER, -1);
 		if (number < 0 && errno == EAGAIN)
 		{
 			printf("epoll_wait error -> %d:%s", errno, strerror(errno));
 			break;
 		}	
-
 		for (int i = 0; i < number; ++i)
 		{
 			int sockfd = event[i].data.fd;
@@ -282,10 +303,10 @@ void ProcessPool<T>::run_parent()
 					m_stop = true;
 					break;
 				}
+
 				sub_process_counter = (sub_process_counter + 1)%m_process_number;
 				printf("Send request to child [%d]\n", m_sub_process[idx].m_pid);
 				send(m_sub_process[idx].m_pipefd[0], (char *)&new_conn, sizeof(new_conn), 0);
-				
 
 			} /* 有来自外界的信号 */
 			else if (sockfd == sig_pipefd[0] && (event[i].events & EPOLLIN))
@@ -350,10 +371,7 @@ void ProcessPool<T>::run_parent()
 	close(m_epollfd);
 	close(sig_pipefd[0]);
 	close(sig_pipefd[1]);
-	
 }
-
-
 
 
 #endif
