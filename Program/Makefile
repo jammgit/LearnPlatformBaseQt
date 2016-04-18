@@ -1,13 +1,13 @@
-main : apue.o main.o
-	g++ -o main apue.o main.o -lpthread
+Main : Apue.o Main.o
+	g++ -o Main Apue.o Main.o -lpthread
 
-main.o :
-	g++ -std=c++11 -c main.c -lpthread -I/usr/include/c++/5/ 
+Main.o :
+	g++ -std=c++11 -c Main.c -lpthread -I/usr/include/c++/5/ 
 
-apue.o :
-	g++ -c apue.c
+Apue.o :
+	g++ -c Apue.c
 
 
 .PHONY clean:
 clean:
-	-rm *.o main
+	-rm *.o Main

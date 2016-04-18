@@ -7,7 +7,7 @@
 */
 
 #include "ProcessPool.h"
-#include "CgiServer.h"
+#include "XServer.h"
 
 
 int main(int argc, char *argv[])
@@ -32,7 +32,7 @@ int main(int argc, char *argv[])
 
 	listen(listenfd, 32767);
 
-	ProcessPool<CgiServer> *pCgi = ProcessPool<CgiServer>::Create(listenfd);
+	ProcessPool<XServer> *pCgi = ProcessPool<XServer>::Create(listenfd);
 
 	if (pCgi)
 	{

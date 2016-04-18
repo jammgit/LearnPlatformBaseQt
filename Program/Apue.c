@@ -5,7 +5,7 @@
 *	描述：功能函数实现
 */
 
-#include "apue.h"
+#include "Apue.h"
 
 int sig_pipefd[2];
 

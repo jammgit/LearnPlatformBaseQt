@@ -7,8 +7,7 @@
 
 #ifndef CGISERVER_H
 #define CGISERVER_H
-#include "apue.h"
- 
+
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
@@ -25,35 +24,34 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
-#define MAX_RECV_BUF 512
+#include "Apue.h"
+#include "FileServer.h"
 
-class CgiServer
+#include "BaseServer.h"
+
+#include "MsgStruct.h"
+#include "MsgType.h"
+
+class XServer
 {
 private:
-	const int BUFFSIZE = 256;
-	int m_epollfd;
 	int m_connfd;
-	struct sockaddr_in m_client;
+
 public:
-	CgiServer(int connfd):m_connfd(connfd) {};
-
-	void Init(int epollfd, int connfd, const sockaddr_in& client)
-	{
-		m_epollfd = epollfd;
-		m_connfd = connfd;
-		m_client = client;
-	}
-
+	XServer(int connfd):m_connfd(connfd) {};
 	/* 进程将剩余任务交给子进程，然后自己立刻回到epoll_wait状态 */
 	int Process()
 	{
-		int nRead;
-		char buf[BUFFSIZE];
-		char sendbuf[BUFFSIZE + 32];
+		int nRead = 0;
+		char sendbuf[TEXTSIZE + sizeof(short) + 32];
+		msgPack msg;
 		while (1)
 		{
-			memset(buf, 0, sizeof(buf));
-			nRead = recv(m_connfd, buf, BUFFSIZE, 0);
+			if (nRead < 0)	/* 在下面处理事件循环回来后，套接字已经是关闭状态 */
+				return -1;
+			memset(&msg, 0, sizeof(msgPack));
+			nRead = recv(m_connfd, (char *)&msg, sizeof(msgPack), 0);
+
 			if (nRead == 0)
 			{
 				close(m_connfd);
@@ -63,17 +61,51 @@ public:
 			{
 				return m_connfd;
 			}
-			/* 处理事件 */
+			/* 开始处理事件 */
+			switch(ntohs(msg.type))
+			{	/* 回射服务 */
+				case MSG_ECHO:
+				{	
+					printf("process echo\n");
+					memset(sendbuf, 0, sizeof(sendbuf));
+					strcat(msg.text, "(You send to server)\n");
+					send(m_connfd, (char *)&msg, strlen((char *)&msg), 0);					
+					break;
+				}/* 文件服务 */
+				case MSG_DOWNLOAD_FILE:
+				case MSG_UPLOAD_FILE:
+				case MSG_RELOAD_FILE:
+					printf("process file:%s\n", msg.text);
+					nRead = subProcess(new FileServer(m_connfd, msg.type), msg.text, strlen(msg.text));
+					break;
+				default:
+					break;
+			}
 			
-			buf[nRead] = '\0';
-			memset(sendbuf, 0, sizeof(sendbuf));
-			sprintf(sendbuf, "You have send to server:%s", buf);
-			send(m_connfd, buf, strlen(buf), 0);
+			
+
 		}
 
 	}
+private:
+	/* 抽象工厂！分用函数，text为用户请求的消息文本 */
+	int subProcess(BaseServer *base, char *text, int textlen);
 
 };
+
+int XServer::subProcess(BaseServer *base, char *text, int textlen)
+{
+	printf("subProcess\n");
+	int ret = base->Respond(text, textlen);
+
+	if (base)
+	{
+		delete base;
+		base = nullptr;
+	}
+
+	return ret;
+}
 
 
 #endif

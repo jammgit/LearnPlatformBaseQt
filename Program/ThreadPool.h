@@ -18,7 +18,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <list>
-#include "apue.h"
+#include "Apue.h"
 
 template<typename T>
 class ThreadPool

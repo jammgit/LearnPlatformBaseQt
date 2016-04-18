@@ -33,7 +33,7 @@
 */
 #include "ThreadPool.h"
 /*	其实也不用再包含此头文件，因为ThreadPool.h 已包含 */
-#include "apue.h"
+#include "Apue.h"
 
 /* 父进程用于标志子进程的类 */
 class Process
@@ -45,7 +45,7 @@ public:
 	int m_pipefd[2];
 };
 
-/* 进程池类 */
+/* 进程池类 */ 
 template< typename T >
 class ProcessPool
 {
