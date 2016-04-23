@@ -26,6 +26,7 @@
 #include <netinet/in.h>
 #include <sys/stat.h>
 
+#include "MYSQLConnPool.h"
 /*
 *	ThreadPool.h 和 apue.h包含的顺序不能变；若倒置，由于ProcessPool.h包含ThreadPool.h，而
 *	ProcessPool.h已包含apue.h，所以在ThreadPool.h中就算有#include"apue.h"的语句，它也不会
@@ -35,6 +36,7 @@
 /*	其实也不用再包含此头文件，因为ThreadPool.h 已包含 */
 #include "Apue.h"
 
+extern MYSQLConnPool *connpool;
 /* 父进程用于标志子进程的类 */
 class Process
 {
@@ -160,6 +162,7 @@ void ProcessPool<T>::Run()
 	
 }
 
+
 template<typename T>
 void ProcessPool<T>::run_child()
 {
@@ -174,9 +177,16 @@ void ProcessPool<T>::run_child()
 
 	/* 实例化线程池 */
 	ThreadPool<T> tpool(m_epollfd);
-	/* 服务类型的类，根据下文，T类必须实现init、process函数 */
-	// T *users = new T[USER_PER_PROCESS];
-	// assert(users);
+	connpool = MYSQLConnPool::CreateConnPool("localhost",
+											 "root",
+											 "root",
+											 "LearnPlatformBaseQT",
+											 4);	// 建立连接数量
+	if (!connpool)
+	{
+		printf("connect mysql failed\n");
+		exit(-1);
+	}
 
 	int number = 0; /* epoll_wait返回值存储变量 */
 	int ret = -1;  /* 各种系统调用返回值存储变量 */
@@ -262,6 +272,8 @@ void ProcessPool<T>::run_child()
 	close(m_epollfd);
 	close(sig_pipefd[0]);   
 	close(sig_pipefd[1]);
+	delete connpool;
+	connpool = nullptr;
 }
 
 template<typename T>

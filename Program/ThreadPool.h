@@ -36,7 +36,7 @@ public:
 	};
 	/*	为提高线程池类的复用性，提供一个默认构造函数。
 	*/
-	ThreadPool(long threadnum = 8, long maxreqnum = 1000);
+	ThreadPool(long threadnum = 8, long maxreqnum = 1024);
 
 	~ThreadPool()
 	{
@@ -81,6 +81,7 @@ ThreadPool<T>::ThreadPool(long threadnum, long maxreqnum)
 	int ret;
 	/* 信号量值小于零就block */
 	ret = sem_init(&m_QueSem, 0, 0);
+	
 	if (ret == -1)
 	{
 		printf("ThreadPool: [sem_init] failed, errno[%d]:%s\n", errno, strerror(errno));

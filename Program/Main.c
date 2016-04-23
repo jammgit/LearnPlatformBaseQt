@@ -8,7 +8,9 @@
 
 #include "ProcessPool.h"
 #include "XServer.h"
+#include "MYSQLConnPool.h"
 
+MYSQLConnPool *connpool = nullptr;
 
 int main(int argc, char *argv[])
 {

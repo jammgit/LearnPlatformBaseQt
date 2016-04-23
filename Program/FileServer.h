@@ -4,7 +4,9 @@
 #include "BaseServer.h"
 #include "MsgStruct.h"
 #include "MsgType.h"
+#include "MYSQLConnPool.h"
 #include <fcntl.h>
+#include <mysql.h>
 
 /*	文件传输类
  *	
@@ -31,6 +33,12 @@ public:
 	virtual int ReloadFile(char *reqtext, int textlen);
 private:
 	short m_MsgType;
+
+private:	/* 一些文件服务对请求文本的格式要求 */
+	const int UPLOAD_SEGS = 3;
+	const int DOWNLOAD_SEGS = 2;	/* 如：下载文件时，请求信息包的文本中应该包含两个信息段，用指定分隔符分隔 */
+	const int RELOAD_SEGS = 2;	
+
 };
 
 int FileServer::Respond(char *reqtext, int textlen)
@@ -57,10 +65,46 @@ int FileServer::UploadFile(char *reqtext, int textlen)
 {
 	return 0;
 }
+
+/*
+*	下载请求时，请求包text文本格式：
+*	account + '_' + file_name
+*/
 int FileServer::DownloadFile(char *reqtext, int textlen)
 {
+
+	std::vector<std::string> pack = gSplitMsgPack(reqtext);
+	printf("%s_%s\n",pack[0].c_str(), pack[1].c_str());
+	if (pack.size() != DOWNLOAD_SEGS)
+	{	/* 请求包信息错误 */
+		// ...
+	}
+	char buffer[256];
+	sprintf(buffer, "select path_name from T_SourceArea where file_name='%s' and account='%s';",
+			pack[1].c_str(), pack[0].c_str());
+	int idx = connpool->Query(buffer);
+	if (idx < 0)
+	{
+		printf("Mysql pool error\n");
+		return m_connfd;
+	}
+	MYSQL_RES *res = connpool->StoreResult(idx);
+	if (!res)
+	{
+		printf("Mysql result error\n");
+		return m_connfd;
+	}
+
+	MYSQL_ROW row = mysql_fetch_row(res);
+	unsigned int fields = mysql_num_fields(res);
+	if (row)
+	{
+		for (int i = 0; i < fields; ++i)
+			printf("%s\n", row[i]?row[i]:"NULL");
+	}
+
 	printf("DownloadFile\n");
-	int fd = open(reqtext, O_RDONLY);
+	int fd = open(row[0], O_RDONLY);
 	if (fd < 0)
 		printf("open file failed\n");
 	int nR;
@@ -89,6 +133,7 @@ int FileServer::DownloadFile(char *reqtext, int textlen)
 	close(fd);
 	return m_connfd;
 }
+
 int FileServer::ReloadFile(char *reqtext, int textlen)
 {
 	return 0;

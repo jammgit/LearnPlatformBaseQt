@@ -68,3 +68,71 @@ void gResetOneshot(int epollfd, int sockfd)
 	event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
 	epoll_ctl(epollfd, EPOLL_CTL_MOD, sockfd, &event);
 }
+/*
+*	默认转义字符为'\\'，分隔符为了'_'的文本串分离函数	
+*/
+std::vector<std::string> gSplitMsgPack(const char *text, char conver, char splitc)
+{
+	std::vector<std::string> pack;
+	int tlen = strlen(text);
+	char *str = (char *)malloc(sizeof(char)*tlen);
+	int strindex = 0;
+	int index = 0;
+	bool isConverl = true;    // 是否'\\'
+	bool isProtectConverl = true;		// 是否‘_’
+	memset(str, 0, sizeof(char)*tlen);
+	while (text[index] != '\0')
+	{
+		
+		str[strindex] = text[index];
+		if (strindex > 0)
+		{
+			if (str[strindex - 1] == conver && str[strindex] == conver)
+			{
+				if (isConverl)
+				{
+					str[strindex - 1] = str[strindex];
+					strindex--;
+				}
+				isConverl = !isConverl;     /* 连着几个'\\'字符的情况 */
+				isProtectConverl = true; 	/* 可能后面是连续几个'\\'，要保护好现场信息（通过保护isConverl值）*/
+			}
+			else if (str[strindex - 1] == conver && str[strindex] == splitc)
+			{
+				if (!isConverl) /* 如果'_'前面的'\\'字符是已经被转义了,那么这个'_'代表真正的分隔符 */
+				{
+		
+					str[strindex] = '\0';
+					pack.push_back(std::string(str));
+					memset(str, 0, sizeof(char)*tlen);
+					strindex = -1;
+	
+				}
+				else	/* 这个'\\'的确是为了转义'_' */
+				{
+					str[strindex - 1] = str[strindex];
+					strindex--;	
+				}
+				isProtectConverl = false;
+			}
+			else if (str[strindex - 1] != conver && str[strindex] == splitc)
+			{
+				str[strindex] = '\0';
+				pack.push_back(std::string(str));
+				memset(str, 0, sizeof(char)*tlen);
+				strindex = -1;
+
+				isProtectConverl = false;
+			}
+		}
+		if (!isProtectConverl) /* 因为'\\'判别又重新开始 */
+			isConverl = true;
+
+		strindex++;
+		index++;
+	}
+	str[strindex] = text[index];
+	pack.push_back(std::string(str));
+	free(str);
+	return pack;
+}

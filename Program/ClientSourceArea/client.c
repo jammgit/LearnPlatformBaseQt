@@ -130,8 +130,8 @@ int main(int argc, char *argv[])
 					fd = open("file", O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 					write(fd, msg.text, strlen(msg.text));
 					close(fd);
-					
-					continue;
+					close(sock);
+					exit(0);
 				}
 
 				write(STDOUT_FILENO, msg.text, strlen(msg.text));
