@@ -20,6 +20,8 @@
 #include <list>
 #include "Apue.h"
 
+
+
 template<typename T>
 class ThreadPool
 {
@@ -175,10 +177,13 @@ void ThreadPool<T>::Run(int index)
 		}
 		/* 返回该线程处理的套接字 */
 		int sockfd = request->Process();
-		/* 如果该线程的套接字设置了EPOLLONESHOT;另外，如果Process返回小于零值，说明套接字被关闭，此时不应该再注册该套接字 */
+		/* 如果该线程的套接字设置了EPOLLONESHOT;另外，如果Process返回小于零值，说明套接字被关闭，此时不应该再重置该套接字 */
 		if (m_epollfd > 0 && sockfd > 0)
-		{
 			gResetOneshot(m_epollfd, sockfd);
+		else
+		{
+			gRemovefd(m_epollfd, -sockfd);
+			close(-sockfd);
 		}
 		delete request;
 	}

@@ -47,16 +47,20 @@ public:
 		msgPack msg;
 		while (1)
 		{
-			if (nRead < 0)	/* 在下面处理事件循环回来后，套接字已经是关闭状态 */
-				return -1;
+			/* 在下面处理事件循环回来后，套接字已经是关闭状态!这里有个注意点，返回连接套接字的相反数，
+			因此控制线程可以根据返回值而在epoll删除fd，不再监听此套接字；又如下文，如果客户端没关闭套接字，
+			那么返回原值，此时控制线程可以在epoll 修改fd的epoll事件 */
+			if (nRead < 0)	
+				return -m_connfd;
 			memset(&msg, 0, sizeof(msgPack));
 			nRead = recv(m_connfd, (char *)&msg, sizeof(msgPack), 0);
 
+			/* recv返回EOF,代表客户端关闭套接字 */
 			if (nRead == 0)
 			{
 				close(m_connfd);
-				return -1;
-			}
+				return -m_connfd;
+			}/* 因为套接字是非阻塞的，故当发生这种那个情况，仅代表无可读数据*/
 			else if (nRead < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
 			{
 				return m_connfd;
@@ -75,14 +79,13 @@ public:
 				case MSG_DOWNLOAD_FILE:
 				case MSG_UPLOAD_FILE:
 				case MSG_RELOAD_FILE:
+				case MSG_DELETE_FILE:
 					printf("process file:%s\n", msg.text);
-					nRead = subProcess(new FileServer(m_connfd, msg.type), msg.text, strlen(msg.text));
+					nRead = subProcess(new FileServer(m_connfd, ntohs(msg.type)), msg.text, strlen(msg.text));
 					break;
 				default:
 					break;
 			}
-			
-			
 
 		}
 

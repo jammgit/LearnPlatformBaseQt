@@ -54,24 +54,17 @@ const short MSG_REQENTERGROUP_NONAME = 32;
 
 const short MSG_DOWNLOAD_FILE = 33;
 const short MSG_UPLOAD_FILE = 34;
+//////////////////////////////
+/////////reload控制信息//////////////
 const short MSG_RELOAD_FILE = 35;
+//////////////////////////////
 const short MSG_DELETE_FILE = 36;
 
 const short MSG_ECHO = 4567;
+const short MSG_OK = 4568;
+const short MSG_ERROR = 4569;
 
 
-// const short MSG_LOGOUT = 500;
-
-// // Error type ...
-// const short E_LOGIN = 1000;
-
-// // buffuer size ...
-// const short BUFFSIZE = 256;
-// const short MSGSIZE = 512;
-// const short NAMESIZE = 64;
-// const short TIMESIZE = 64;
-
-// const short GROUPMEMSIZE = 8;
 
 
 #endif // MSGTYPE_H

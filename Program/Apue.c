@@ -9,7 +9,7 @@
 
 int sig_pipefd[2];
 
-/* 设置套接字非阻塞 */
+/* 设置套接字非阻塞 */ 
 int gSetNonblocking(int fd)
 {
 	int old_option = fcntl(fd, F_GETFL);
@@ -22,7 +22,7 @@ int gSetNonblocking(int fd)
 void gAddfd(int epollfd, int fd, bool oneshoot)
 {
 	epoll_event event;
-	event.data.fd = fd;
+	event.data.fd = fd; 
 	event.events = EPOLLIN | EPOLLET;
 	/* 同一时刻只允许一个线程处理该描述符 */
 	if (oneshoot)
@@ -58,7 +58,6 @@ void gAddSig(int sig, void (*handler)(int), bool restart)
 void gRemovefd(int epollfd, int fd)
 {
 	epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, 0);
-	close(fd);
 }
 
 void gResetOneshot(int epollfd, int sockfd)
@@ -68,6 +67,7 @@ void gResetOneshot(int epollfd, int sockfd)
 	event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
 	epoll_ctl(epollfd, EPOLL_CTL_MOD, sockfd, &event);
 }
+
 /*
 *	默认转义字符为'\\'，分隔符为了'_'的文本串分离函数	
 */

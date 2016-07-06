@@ -25,8 +25,6 @@
 #include <string.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
-
-#include "MYSQLConnPool.h"
 /*
 *	ThreadPool.h 和 apue.h包含的顺序不能变；若倒置，由于ProcessPool.h包含ThreadPool.h，而
 *	ProcessPool.h已包含apue.h，所以在ThreadPool.h中就算有#include"apue.h"的语句，它也不会
@@ -35,8 +33,8 @@
 #include "ThreadPool.h"
 /*	其实也不用再包含此头文件，因为ThreadPool.h 已包含 */
 #include "Apue.h"
+#include "MYSQLConnPool.h"
 
-extern MYSQLConnPool *connpool;
 /* 父进程用于标志子进程的类 */
 class Process
 {
@@ -177,16 +175,13 @@ void ProcessPool<T>::run_child()
 
 	/* 实例化线程池 */
 	ThreadPool<T> tpool(m_epollfd);
-	connpool = MYSQLConnPool::CreateConnPool("localhost",
-											 "root",
-											 "root",
-											 "LearnPlatformBaseQT",
-											 4);	// 建立连接数量
-	if (!connpool)
-	{
-		printf("connect mysql failed\n");
-		exit(-1);
-	}
+	/* 创建数据库连接池 */
+	MYSQLConnPool::CreateConnPool("localhost",
+								 "root",
+								 "root",
+								 "LearnPlatformBaseQT",
+								 4);	// 建立连接数量
+
 
 	int number = 0; /* epoll_wait返回值存储变量 */
 	int ret = -1;  /* 各种系统调用返回值存储变量 */
@@ -249,9 +244,10 @@ void ProcessPool<T>::run_child()
 						}
 						case SIGTERM:
 						case SIGINT:
-						{
-							m_stop = true;
-							break;
+						{/* 直接退出，系统回收所有资源了*/
+							exit(0);
+							// m_stop = true;
+							// break;
 						}
 						default:
 							break;
@@ -272,8 +268,6 @@ void ProcessPool<T>::run_child()
 	close(m_epollfd);
 	close(sig_pipefd[0]);   
 	close(sig_pipefd[1]);
-	delete connpool;
-	connpool = nullptr;
 }
 
 template<typename T>
@@ -291,7 +285,7 @@ void ProcessPool<T>::run_parent()
 	while (!m_stop)
 	{
 		number = epoll_wait(m_epollfd, event, MAX_EVENT_NUMBER, -1);
-		if (number < 0 && errno == EAGAIN)
+		if (number < 0 && errno == EAGAIN)/* 被中断 */
 		{
 			printf("epoll_wait error -> %d:%s", errno, strerror(errno));
 			break;
@@ -387,3 +381,5 @@ void ProcessPool<T>::run_parent()
 
 
 #endif
+
+

@@ -17,10 +17,77 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <fcntl.h>
+#include <vector>
+#include <string>
 
-#include "MsgStruct.h"
-#include "MsgType.h"
+#include "../MsgStruct.h"
+#include "../MsgType.h"
 
+std::vector<std::string> gSplitMsgPack(const char *text, char conver, char splitc)
+{
+	std::vector<std::string> pack;
+	int tlen = strlen(text);
+	char *str = (char *)malloc(sizeof(char)*tlen);
+	int strindex = 0;
+	int index = 0;
+	bool isConverl = true;    // 是否'\\'
+	bool isProtectConverl = true;		// 是否‘_’
+	memset(str, 0, sizeof(char)*tlen);
+	while (text[index] != '\0')
+	{
+		
+		str[strindex] = text[index];
+		if (strindex > 0)
+		{
+			if (str[strindex - 1] == conver && str[strindex] == conver)
+			{
+				if (isConverl)
+				{
+					str[strindex - 1] = str[strindex];
+					strindex--;
+				}
+				isConverl = !isConverl;     /* 连着几个'\\'字符的情况 */
+				isProtectConverl = true; 	/* 可能后面是连续几个'\\'，要保护好现场信息（通过保护isConverl值）*/
+			}
+			else if (str[strindex - 1] == conver && str[strindex] == splitc)
+			{
+				if (!isConverl) /* 如果'_'前面的'\\'字符是已经被转义了,那么这个'_'代表真正的分隔符 */
+				{
+		
+					str[strindex] = '\0';
+					pack.push_back(std::string(str));
+					memset(str, 0, sizeof(char)*tlen);
+					strindex = -1;
+	
+				}
+				else	/* 这个'\\'的确是为了转义'_' */
+				{
+					str[strindex - 1] = str[strindex];
+					strindex--;	
+				}
+				isProtectConverl = false;
+			}
+			else if (str[strindex - 1] != conver && str[strindex] == splitc)
+			{
+				str[strindex] = '\0';
+				pack.push_back(std::string(str));
+				memset(str, 0, sizeof(char)*tlen);
+				strindex = -1;
+
+				isProtectConverl = false;
+			}
+		}
+		if (!isProtectConverl) /* 因为'\\'判别又重新开始 */
+			isConverl = true;
+
+		strindex++;
+		index++;
+	}
+	str[strindex] = text[index];
+	pack.push_back(std::string(str));
+	free(str);
+	return pack;
+}
 //#define path "tempfile.socket"
 
 void sig(int sig)
@@ -46,7 +113,7 @@ int main(int argc, char *argv[])
 	memset(buf, 0, sizeof(buf));
 	short type;
 	int which;
-	printf("Please input type:1[echo] 2[download file]");
+	printf("Please input type:1[echo] 2[download file] 3[delete file] 4[upload file] 5[Reload file]");
 	scanf("%d", &which);
 	switch(which)
 	{
@@ -57,6 +124,18 @@ int main(int argc, char *argv[])
 		case 2:
 			type = MSG_DOWNLOAD_FILE;
 			strcpy(buf, "Please input filename:");
+			break;
+		case 3:
+			type = MSG_DELETE_FILE;
+			strcpy(buf, "Please input filename:");
+			break;
+		case 4:
+			type = MSG_UPLOAD_FILE;
+			strcpy(buf, "Please input filename:");
+			break;
+		case 5:
+			type = MSG_RELOAD_FILE;
+			strcpy(buf, "Please input 'format'(（全部资源=0|某一学科>0）整形 + '_' + (时间0|热度1)整形 + ‘_' + （请求起始索引>=0）整形):");
 			break;
 		default:
 			break;
@@ -133,17 +212,69 @@ int main(int argc, char *argv[])
 					close(sock);
 					exit(0);
 				}
+				else if(ntohs(msg.type) == MSG_OK)
+				{
+					if (type == MSG_RELOAD_FILE)
+					{
+						std::vector<std::string> pack1 = gSplitMsgPack(msg.text, '\\', '+');
+						size_t size = pack1.size();
+						for (size_t i = 0; i < size; ++i)
+						{
+							std::vector<std::string> pack2 = gSplitMsgPack(pack1[i].c_str(), '\\', '_');
+							printf("%-15s %-15s %-15s %-15s\n",
+									pack2[0].c_str(),
+									pack2[1].c_str(),
+									pack2[2].c_str(),
+									pack2[3].c_str());
 
-				write(STDOUT_FILENO, msg.text, strlen(msg.text));
-				isp = true;
+						}
+						exit(0);
+					}
+					else
+						printf("Input string in stdin imitating the file(end with string 'EOF'):\n");
+
+
+				}
+				else if(ntohs(msg.type) == MSG_RELOAD_FILE)
+				{
+					std::vector<std::string> pack1 = gSplitMsgPack(msg.text, '\\', '+');
+					size_t size = pack1.size();
+					for (size_t i = 0; i < size; ++i)
+					{
+						std::vector<std::string> pack2 = gSplitMsgPack(pack1[i].c_str(), '\\', '_');
+						printf("%-15s %-15s %-15s %-15s\n",
+								pack2[0].c_str(),
+								pack2[1].c_str(),
+								pack2[2].c_str(),
+								pack2[3].c_str());
+
+					}
+
+				}
+				else
+				{
+					write(STDOUT_FILENO, msg.text, strlen(msg.text));
+					isp = true;
+				}
 			}
 			else if (event[i].data.fd == STDIN_FILENO && (event[i].events & EPOLLIN))
 			{
 				msg.type = htons(type);
 				memset(msg.text, 0, sizeof(msg.text));
 				nR = read(STDIN_FILENO, msg.text, TEXTSIZE);
+				printf("You have input:%s\n",msg.text);
+				if (strncmp("EOF", msg.text, 3) == 0)
+				{
+					printf("check EOF\n");
+					msg.type = htons(MSG_OK);
+				}
 				// 去掉换行符
 				msg.text[nR - 1] = '\0';
+				if (ntohs(msg.type) == MSG_RELOAD_FILE)
+				{
+					printf("%-15s %-15s %-15s %-15s\n",
+						"account","file_name","upload_time","download_count");
+				}
 									
 				ret = write(sock, (char *)&msg, sizeof(msg.type) + strlen(msg.text));
 				if (ret < 0)
@@ -151,6 +282,11 @@ int main(int argc, char *argv[])
 					close(sock);
 					printf("write sock ret < 0\n");
 					exit(-1);
+				}
+				if (ntohs(msg.type) == MSG_OK)
+				{
+					printf("upload success, you can check server file\n");
+					exit(0);
 				}
 				isp = false;
 			}
