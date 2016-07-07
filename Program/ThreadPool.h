@@ -176,14 +176,19 @@ void ThreadPool<T>::Run(int index)
 			continue;
 		}
 		/* 返回该线程处理的套接字 */
-		int sockfd = request->Process();
+		int sockfd = request->GetConnfd();
+		int ret = request->Process();
 		/* 如果该线程的套接字设置了EPOLLONESHOT;另外，如果Process返回小于零值，说明套接字被关闭，此时不应该再重置该套接字 */
-		if (m_epollfd > 0 && sockfd > 0)
+		if (m_epollfd > 0 && ret > 0)
+		{
+			printf("Reset client\n");
 			gResetOneshot(m_epollfd, sockfd);
+		}
 		else
 		{
-			gRemovefd(m_epollfd, -sockfd);
-			close(-sockfd);
+			printf("Client close socket!\n");
+			gRemovefd(m_epollfd, sockfd);
+			close(sockfd);
 		}
 		delete request;
 	}

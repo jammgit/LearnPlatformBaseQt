@@ -23,6 +23,10 @@
 *	对于文件存档，第一种是不同类型文档放不同数据库；
 */
 
+/*
+*	①任何出错均不主动关闭连接，返回 >0
+*	②有可能通过过程文件服务类接受到FIN，则返回-1（控制线程管理套接字）
+*/
 class FileServer : public BaseServer
 {
 public:
@@ -30,6 +34,14 @@ public:
 		:BaseServer(connfd), m_MsgType(msgtype)
 	{
 		m_ConnPool = MYSQLConnPool::GetConnPoolPointer();
+		if (!m_ConnPool)
+		{
+			m_ConnPool = MYSQLConnPool::CreateConnPool("localhost",
+													 "root",
+													 "root",
+													 "LearnPlatformBaseQT",
+													 4);	// 建立连接数量
+		}
 	};
 	int Respond(char *reqtext, int textlen) final;
 	/* 可能以后会添加子类增添传输方式 */
@@ -37,6 +49,29 @@ public:
 	virtual int DownloadFile(char *reqtext, int textlen);
 	virtual int ReloadFile(char *reqtext, int textlen);
 	virtual int DeleteFile(char *reqtext, int textlen);
+private:
+	/* 为避免代码重复率，回复时统一使用此函数,参数为回复的类型、文本 */
+	int RespondClient(short type, const char *str)
+	{
+		msgPack msg;
+		msg.type = htons(type);
+		strcat(msg.text, str);
+		msg.text[strlen(msg.text)] = '\0';
+		int ret = send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
+		/* 可能在 【客户端请求到达->服务类开始服务】 这段间隙，客户关闭的套接字 */
+		while (ret < 0)
+		{
+			if (errno == EWOULDBLOCK || errno == EAGAIN)
+			{/* 存储区满 */
+				ret = send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
+			}
+			else if (errno == EPIPE)
+			{/* 客户端关闭，写导致爆管 */
+				return -1;
+			}
+		}
+		return ret;
+	}
 private:
 	short m_MsgType;
 	MYSQLConnPool *m_ConnPool;
@@ -85,9 +120,11 @@ int FileServer::UploadFile(char *reqtext, int textlen)
 	std::vector<std::string> pack = gSplitMsgPack(reqtext);
 	if (pack.size() != UPLOAD_SEGS)
 	{/* 发送的数据格式有错 */
-
+		return RespondClient(MSG_ERROR, "请求格式错误,正确格式为:用户名_文件名_学科号");
 	}
+
 	printf("%s_%s_%s\n", pack[0].c_str(), pack[1].c_str(), pack[2].c_str());
+	/* 数据库操作 */
 	MYSQL *conn = m_ConnPool->GetConnection();
 	char buffer[256];
 	sprintf(buffer, "select * from T_SourceInfo where account='%s' and file_name='%s';",
@@ -98,7 +135,7 @@ int FileServer::UploadFile(char *reqtext, int textlen)
 	{
 		printf("mysql query error\n");
 		m_ConnPool->RecoverConnection(conn);
-		return -1;
+		return RespondClient(MSG_ERROR, "服务器数据库查询出错");	
 	}
 	MYSQL_RES *res = mysql_store_result(conn);
 	MYSQL_ROW row = mysql_fetch_row(res); // 获取一行
@@ -107,79 +144,68 @@ int FileServer::UploadFile(char *reqtext, int textlen)
 		printf("File have exist\n");
 		mysql_free_result(res);
 		m_ConnPool->RecoverConnection(conn);
-		return -1;
+		return RespondClient(MSG_ERROR, "此用户已存在同名文件");
 	}
 	mysql_free_result(res);
 	/* 归还连接 */
 	m_ConnPool->RecoverConnection(conn);
 
 	/* 回复可以上传该文件 */
-	msgPack msg;
-	msg.type = htons(MSG_OK);
-	msg.text[0] = '\0';
-	int nW;
-	while ((nW = write(m_connfd, reinterpret_cast<char *>(&msg), strlen((char *)&msg))) < 0)
-	{/* 有可能是缓冲区满了 */
-		if (errno != EWOULDBLOCK && errno != EAGAIN)
-		{/* 如果不是 */
-
-			return -1;
-		}
+	ret = RespondClient(MSG_OK, "");
+	if (ret < 0)
+	{/* 爆管 */
+		return ret;
 	}
 
-	/* 先设置套接字为阻塞型，因为可能电脑处理快过网络传输 */
-	int old_option = fcntl(m_connfd, F_GETFL);
-	int new_option = old_option & ~O_NONBLOCK;
-	fcntl(m_connfd, F_SETFL, new_option);
-
-	/* 开始接受文件 */
+	/* 开始接受文件[考虑：本地处理快过网络传输] */
 	printf("Start receive:\n");
 	char fname[128];
 	sprintf(fname, "./ServerSourceArea/%s_%s", pack[0].c_str(), pack[1].c_str());
-
+	msgPack msg;
 	int fd = open(fname, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 	int nR;
-	while ((nR = recv(m_connfd, (char *)&msg, sizeof(msg), 0)) > 0)
-	{
-		if (ntohs(msg.type) == MSG_UPLOAD_FILE)
-		{
-			printf("Receive oneline\n");
-			write(fd, msg.text, strlen(msg.text));
-		}
-		else if (ntohs(msg.type) == MSG_OK)
-		{/* 上传完成 */
-			printf("Receive finish\n");
-			close(fd);
-			time_t t;
-			time(&t);
-			sprintf(buffer, "insert into T_SourceInfo values('%s', %ld, '%s', 0, '%s', %d);",
-				pack[1].c_str(),
-				t,
-				pack[0].c_str(),
-				fname,
-				atoi(pack[2].c_str()));
-			conn = m_ConnPool->GetConnection();
-			ret = mysql_query(conn, buffer);
-			if (ret < 0)
+	while ((nR = recv(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg), 0)) != 0)
+	{/* nR<0 是因为缓冲区无数据可读，目前没想到更好的办法 */
+		if (nR > 0)
+		{/* 接受到数据 */
+			if (ntohs(msg.type) == MSG_UPLOAD_FILE)
 			{
-				printf("insert error\n");
-				m_ConnPool->RecoverConnection(conn);
+				printf("Receive oneline\n");
+				write(fd, msg.text, strlen(msg.text));
 			}
-			m_ConnPool->RecoverConnection(conn);
-			break;
+			else if (ntohs(msg.type) == MSG_OK)
+			{/* 上传完成 */
+				printf("Receive finish\n");
+				close(fd);
+				time_t t;
+				time(&t);
+				sprintf(buffer, "insert into T_SourceInfo values('%s', %ld, '%s', 0, '%s', %d);",
+					pack[1].c_str(),
+					t,
+					pack[0].c_str(),
+					fname,
+					atoi(pack[2].c_str()));
+				conn = m_ConnPool->GetConnection();
+				ret = mysql_query(conn, buffer);
+				if (ret < 0)
+				{
+					printf("insert error\n");
+					m_ConnPool->RecoverConnection(conn);
+					return RespondClient(MSG_ERROR, "数据库更新出现错误，请重新操作,正确请求格式:用户名_文件名_学科号");
+				}
+				m_ConnPool->RecoverConnection(conn);
+				break;
 
-		}
-		else
-		{
-
+			}
 		}
 	}
-
-
-	/* 恢复套接字非阻塞属性 */
-	gSetNonblocking(m_connfd);
+	if (nR == 0)
+	{/* 客户端断开连接 */
+		close(fd);
+		return -1;
+	}
 	
-	return m_connfd;
+	return 1;
 }
 
 /*
@@ -194,8 +220,9 @@ int FileServer::DownloadFile(char *reqtext, int textlen)
 	std::vector<std::string> pack = gSplitMsgPack(reqtext);
 	if (pack.size() != DOWNLOAD_SEGS)
 	{	/* 请求包信息错误 */
-		// ...
+		return RespondClient(MSG_ERROR, "请求格式错误，正确格式:用户名_文件名");
 	}
+
 	printf("%s_%s\n",pack[0].c_str(), pack[1].c_str());
 	char buffer[256];
 	sprintf(buffer, "select path_name from T_SourceInfo where file_name='%s' and account='%s';",
@@ -207,6 +234,7 @@ int FileServer::DownloadFile(char *reqtext, int textlen)
 	if (ret < 0)
 	{
 		m_ConnPool->RecoverConnection(conn);
+		return RespondClient(MSG_ERROR, "数据库操作出错，请重试！正确请求格式:用户名_文件名");
 	}
 	MYSQL_RES *res = mysql_store_result(conn);
 	MYSQL_ROW row = mysql_fetch_row(res);/* 检索行 */
@@ -215,11 +243,10 @@ int FileServer::DownloadFile(char *reqtext, int textlen)
 	{/* 不存在 */
 		m_ConnPool->RecoverConnection(conn);
 		mysql_free_result(res);
-		return -1;
+		return RespondClient(MSG_ERROR, "请求资源不存在，请重试！正确请求格式:用户名_文件名");
 	}
 	m_ConnPool->RecoverConnection(conn);
 	mysql_free_result(res);
-
 
 	if (row)
 	{
@@ -236,60 +263,39 @@ int FileServer::DownloadFile(char *reqtext, int textlen)
 	if (fd < 0)
 	{
 		printf("open file failed\n");
-		return m_connfd;
+		return RespondClient(MSG_ERROR, "服务器本地打开文件错误，请重试！正确请求格式:用户名_文件名");
 	}
 	int nR, nW;
-	msgPack msg;
-	msg.type = htons(MSG_DOWNLOAD_FILE);
-	while ((nR = read(fd, msg.text, sizeof(msg.text) - 1)) >= 0)
+	char text[TEXTSIZE];
+	//msg.type = htons(MSG_DOWNLOAD_FILE);
+	while ((nR = read(fd, text, sizeof(text) - 1)) >= 0)
 	{
 		printf("Read file\n");
-		/* 这里不为正确行为，如果在传输过程中出现非网络型错误，更合理的处理方案是？ */
-		if (nR < 0)
-		{
-			if (errno == EINTR)
-				continue;	
-			else
-			{
-				close(m_connfd);
-				close(fd);
-				return -1;
-			}
-		}
-		msg.text[nR] = '\0';
+		text[nR] = '\0';
 		if (nR == 0) /* 到文件尾 */
 		{
-			msg.type = htons(MSG_OK);
-			nW = write(m_connfd, (char *)&msg, sizeof(msg.type) + strlen(msg.text));
-			if (nW == -1)
-			{
-				if (errno == EWOULDBLOCK || errno == EAGAIN)
-				{
-
-				}
-				else
-				{
-					
-				}
-			}
-			break;
+			ret = RespondClient(MSG_OK, text);
+			if (ret < 0)/* 爆管 */
+				break;
 		}
-		nW = write(m_connfd, (char *)&msg, sizeof(msg.type) + strlen(msg.text));
-		if (nW == -1)
+		else
 		{
-			if (errno == EWOULDBLOCK || errno == EAGAIN)
-			{
-
-			}
-			else
-			{
-
-			}
+			ret = RespondClient(MSG_DOWNLOAD_FILE, text);
+			if (ret < 0)/* 爆管 */
+				break;
 		}
-		if (nR > 0)
-			printf("Write file to sock\n");
+		printf("Write [%d]byte to sock\n", ret);
 	}
-	close(fd);
+	if (ret < 0)
+	{
+		close(fd);
+		return ret;
+	}
+	if (nR < 0)
+	{/* 读文件错误 */
+		close(fd);
+		return RespondClient(MSG_ERROR, "服务器读文件发生错误，请重试!请求格式:用户名_文件名");
+	}
 
 	sprintf(buffer, "update T_SourceInfo set download_count=download_count+1 where file_name='%s' and account='%s';",
 		pack[1].c_str(),
@@ -297,12 +303,13 @@ int FileServer::DownloadFile(char *reqtext, int textlen)
 	conn = m_ConnPool->GetConnection();
 	ret = mysql_query(conn, buffer);
 	if (ret < 0)
-	{
-
+	{/* 如果真出错怎么办 ...*/
+		m_ConnPool->RecoverConnection(conn);
+		return 1;
 	}
 	m_ConnPool->RecoverConnection(conn);
 
-	return m_connfd;
+	return 1;
 }
 /*
 *	将数据库文件表的信息全息发送给客户端
@@ -316,7 +323,7 @@ int FileServer::ReloadFile(char *reqtext, int textlen)
 	std::vector<std::string> pack = gSplitMsgPack(reqtext);
 	if (pack.size() != RELOAD_SEGS)
 	{
-
+		return RespondClient(MSG_ERROR, "请求格式错误，正确请求格式:全部0/学科>0_时间0/热度1_索引数)");
 	}
 
 	char cate[16];
@@ -343,10 +350,10 @@ int FileServer::ReloadFile(char *reqtext, int textlen)
 	if (ret < 0)
 	{
 		printf("mysql query error\n");
-
+		m_ConnPool->RecoverConnection(conn);
+		return RespondClient(MSG_ERROR, "服务器出错，请重试");
 	}
 	/* 该立刻释放conn吗，就算还要用res，资源释放顺序？ */
-	msgPack msg;
 	MYSQL_RES *res = mysql_store_result(conn);
 	MYSQL_ROW row;
 	/* 去掉指定索引前的记录 */
@@ -360,69 +367,76 @@ int FileServer::ReloadFile(char *reqtext, int textlen)
 			// 处理 ...
 			mysql_free_result(res);
 			m_ConnPool->RecoverConnection(conn);
-			msg.type = htons(MSG_ERROR);
-			msg.text[0] = '\0';
-			send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
-			return 1;
+			return RespondClient(MSG_OK, "");
 		}
 	}
 
 	/* 在剩余的记录中找到指定条数记录并回复给用户 */
-	memset(reinterpret_cast<char *>(&msg), 0, sizeof(msgPack));
-	msg.type = htons(MSG_RELOAD_FILE);
+	char text[TEXTSIZE];
+	memset(text, 0, TEXTSIZE);
 	unsigned int fields = mysql_num_fields(res);
 	int count = 0; //计数器，返回一条记录最长是170字节，所以一条信息至少可以包含3条记录
-	for (int i = 0; i < RELOAD_RETURN_NUM; ++i)
+	int i;
+	for (i = 0; i < RELOAD_RETURN_NUM; ++i)
 	{
 		row = mysql_fetch_row(res);
 		if (row)
 		{
 			for (int j = 0; j < fields; ++j)
 			{
-				strcat(msg.text, row[j]);
-				strcat(msg.text, "_");
+				strcat(text, row[j]);
+				strcat(text, "_");
 			}
 
 			count++;
 			if (count == 3)
 			{/* 回复一条信息 */
-				msg.text[strlen(msg.text)-1] = '\0';
-				send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
-				memset(reinterpret_cast<char *>(&msg), 0, sizeof(msgPack));
-				msg.type = htons(MSG_RELOAD_FILE);
+				text[strlen(text)-1] = '\0';
+				ret = RespondClient(MSG_RELOAD_FILE, text);
+				if (ret < 0)
+				{
+					mysql_free_result(res);
+					m_ConnPool->RecoverConnection(conn);
+					return ret;
+				}
+				memset(text, 0, TEXTSIZE);
 				count=0;	/*新信息的计数值*/
 			}
-			msg.text[strlen(msg.text)-1] = '+';
+			else
+				text[strlen(text)-1] = '+';
 		}
 		else
-		{
-			if (i == 0)
-			{/* 可能在上一步去掉记录时刚好去掉所有 */
+		{/* 就算文本为空，也是返回MSG_OK */
+			mysql_free_result(res);
+			res = nullptr;
+			m_ConnPool->RecoverConnection(conn);
+			int l = strlen(text);
+			if (l != 0)
+				text[l-1]='\0';
+			ret = RespondClient(MSG_OK, text);
+			if (ret < 0)
+			{
 				mysql_free_result(res);
 				m_ConnPool->RecoverConnection(conn);
-				msg.type = htons(MSG_ERROR);
-				msg.text[0] = '\0';
-				send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
-				return 1;	
+				return ret;
 			}
 			break;
 		}
 	}
-	mysql_free_result(res);
+	if (res)
+		mysql_free_result(res);
 	m_ConnPool->RecoverConnection(conn);
-
-	if (strlen(msg.text) == 0)
-	{/* 剩余的记录刚好是3的倍数，都回复了，此时回复MSG_ERROR表示都已回复 */
-		msg.type = htons(MSG_ERROR);
-	}
-	else/*还有不到3条记录*/
+	/* 记录多于k条，那么最后一个MSG_OK包还没发送*/
+	if (i == RELOAD_RETURN_NUM)
 	{
-		msg.text[strlen(msg.text)-1] = '\0';
-		msg.type = htons(MSG_OK);
+		int l = strlen(text);
+		if (l != 0)
+			text[l-1] = '\0';
+		ret = RespondClient(MSG_OK, text);
+		if (ret < 0)
+			return ret;
 	}
-	send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
-
-	return m_connfd;
+	return 1;
 }
 
 /*
@@ -436,8 +450,9 @@ int FileServer::DeleteFile(char *reqtext, int textlen)
 	std::vector<std::string> pack = gSplitMsgPack(reqtext);
 	if (pack.size() != DELETE_SEGS)
 	{
-
+		return RespondClient(MSG_ERROR, "请求格式错误，正确请求格式:用户名_文件名");
 	}
+
 	char buffer[256];
 	sprintf(buffer, "select path_name from T_SourceInfo where account='%s' and file_name = '%s';",
 			pack[0].c_str(), pack[1].c_str());
@@ -446,22 +461,20 @@ int FileServer::DeleteFile(char *reqtext, int textlen)
 	int ret = mysql_query(conn, buffer);
 	if (ret < 0)
 	{
-
+		m_ConnPool->RecoverConnection(conn);
+		return RespondClient(MSG_ERROR, "请求失败，请继续尝试");
 	}
-	MYSQL_RES *res = mysql_store_result(conn);
-	//m_ConnPool->RecoverConnection(conn);
-	MYSQL_ROW row = mysql_fetch_row(res);
 
+	MYSQL_RES *res = mysql_store_result(conn);
+	MYSQL_ROW row = mysql_fetch_row(res);
 	if (!row)
 	{/* 并没有此文件 */
-
 		m_ConnPool->RecoverConnection(conn);
 		mysql_free_result(res);
-		return -1;
+		return RespondClient(MSG_ERROR, "请重试，请求格式:用户名_文件名");
 	}
+
 	mysql_free_result(res);
-
-
 	/* 删除文件/记录 */
 	sprintf(buffer, "delete from T_SourceInfo where account='%s' and file_name='%s';", 
 		pack[0].c_str(),
@@ -469,32 +482,17 @@ int FileServer::DeleteFile(char *reqtext, int textlen)
 	ret = mysql_query(conn, buffer);
 	if (ret < 0)
 	{
-
+		m_ConnPool->RecoverConnection(conn);
+		return RespondClient(MSG_ERROR, "请重试，请求格式:用户名_文件名");	
 	}
 	m_ConnPool->RecoverConnection(conn);
 
-	/* 这里有个问题：如果删除时正有人在下载该文件 */
+	/* 先回复MSG_OK,剩余删除真实文件是服务器内部自己决定的事了 */
+	ret = RespondClient(MSG_OK, "");
+	/* 这里有个问题：如果删除时正有人在下载该文件，如何处理？ */
 	remove(row[0]);
-
-	/* 回复 */
-	msgPack msg;
-	msg.text[0] = '\0';
-	msg.type = htons(MSG_OK);
-	ret = write(m_connfd, (char *)&msg, sizeof(msg.type) + strlen(msg.text));
-	while (ret == -1)
-	{
-		if (errno == EWOULDBLOCK || errno == EAGAIN)	
-		{/* 写缓冲满 */
-			ret = write(m_connfd, (char *)&msg, sizeof(msg.type) + strlen(msg.text));
-		}
-		else
-		{/* write其它出错 */
-
-			break;
-		}
-	}
 	
-	return m_connfd;
+	return ret<0?ret:1;
 }
 
 

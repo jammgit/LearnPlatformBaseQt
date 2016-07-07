@@ -32,48 +32,34 @@
 #include "MsgStruct.h"
 #include "MsgType.h"
 
+/*
+*	对于网络通信出错，要关闭套接字使：Process 返回-1
+*	
+*/
+
 class XServer
 {
-private:
-	int m_connfd;
+
 
 public:
 	XServer(int connfd):m_connfd(connfd) {};
 	/* 进程将剩余任务交给子进程，然后自己立刻回到epoll_wait状态 */
 	int Process()
 	{
-		int nRead = 0;
-		char sendbuf[TEXTSIZE + sizeof(short) + 32];
+		int ret = 0;
 		msgPack msg;
-		while (1)
+		if ((ret = recv(m_connfd, (char *)&msg, sizeof(msgPack), 0)) >= 0)
 		{
-			/* 在下面处理事件循环回来后，套接字已经是关闭状态!这里有个注意点，返回连接套接字的相反数，
-			因此控制线程可以根据返回值而在epoll删除fd，不再监听此套接字；又如下文，如果客户端没关闭套接字，
-			那么返回原值，此时控制线程可以在epoll 修改fd的epoll事件 */
-			if (nRead < 0)	
-				return -m_connfd;
-			memset(&msg, 0, sizeof(msgPack));
-			nRead = recv(m_connfd, (char *)&msg, sizeof(msgPack), 0);
-
-			/* recv返回EOF,代表客户端关闭套接字 */
-			if (nRead == 0)
-			{
-				close(m_connfd);
-				return -m_connfd;
-			}/* 因为套接字是非阻塞的，故当发生这种那个情况，仅代表无可读数据*/
-			else if (nRead < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-			{
-				return m_connfd;
-			}
+			if (ret == 0)
+				return -1;
 			/* 开始处理事件 */
 			switch(ntohs(msg.type))
 			{	/* 回射服务 */
 				case MSG_ECHO:
 				{	
 					printf("process echo\n");
-					memset(sendbuf, 0, sizeof(sendbuf));
-					strcat(msg.text, "(You send to server)\n");
-					send(m_connfd, (char *)&msg, strlen((char *)&msg), 0);					
+					strcat(msg.text, "(You send to server)\n");	
+					ret = RespondClient(MSG_ECHO, msg.text);
 					break;
 				}/* 文件服务 */
 				case MSG_DOWNLOAD_FILE:
@@ -81,19 +67,48 @@ public:
 				case MSG_RELOAD_FILE:
 				case MSG_DELETE_FILE:
 					printf("process file:%s\n", msg.text);
-					nRead = subProcess(new FileServer(m_connfd, ntohs(msg.type)), msg.text, strlen(msg.text));
+					ret = subProcess(new FileServer(m_connfd, ntohs(msg.type)), msg.text, strlen(msg.text));
 					break;
 				default:
 					break;
 			}
+			if (ret < 0)
+				return -1;
 
 		}
-
+		return 1;
+	}
+	int GetConnfd()
+	{
+		return m_connfd;
 	}
 private:
+	/* 为避免代码重复率，回复时统一使用此函数,参数为回复的类型、文本 */
+	int RespondClient(short type, const char *str)
+	{
+		msgPack msg;
+		msg.type = htons(type);
+		strcat(msg.text, str);
+		msg.text[strlen(msg.text)] = '\0';
+		int ret = send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
+		/* 可能在 【客户端请求到达->服务类开始服务】 这段间隙，客户关闭的套接字 */
+		while (ret < 0)
+		{
+			if (errno == EWOULDBLOCK || errno == EAGAIN)
+			{/* 存储区满 */
+				ret = send(m_connfd, reinterpret_cast<char *>(&msg), sizeof(msg.type) + strlen(msg.text), 0);
+			}
+			else if (errno == EPIPE)
+			{/* 客户端关闭，写导致爆管 */
+				return -1;
+			}
+		}
+		return ret;
+	}
 	/* 抽象工厂！分用函数，text为用户请求的消息文本 */
 	int subProcess(BaseServer *base, char *text, int textlen);
-
+private:
+	int m_connfd;
 };
 
 int XServer::subProcess(BaseServer *base, char *text, int textlen)
